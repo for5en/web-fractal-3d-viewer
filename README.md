@@ -3,7 +3,7 @@
 An interactive 3D fractal explorer built with **Three.js** and custom **GLSL** shaders. This project utilizes **Ray Marching** to render complex mathematical fractals in real-time.
 
 ## 🚀 Live Demo
-Project hosted on Render: https://web-fractal-3d-viewer.onrender.com/
+Project hosted on Render: https://web-fractal-3d-viewer.onrender.com
 
 ## ✨ Features
 * **Ray Marching Engine**: High-performance GPU rendering for complex 3D structures.
@@ -19,7 +19,7 @@ Project hosted on Render: https://web-fractal-3d-viewer.onrender.com/
 
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/for5en/web-fractal-3d-viewer.git](https://github.com/for5en/web-fractal-3d-viewer.git)
+   git clone https://github.com/for5en/web-fractal-3d-viewer.git
    ```
 2. Install dependencies:
     ```bash
