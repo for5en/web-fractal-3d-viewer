@@ -12,7 +12,15 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "@tweakpane/plugin-essentials": "^0.2.1",
+    "controlkit": "^0.1.9",
+    "leva": "^0.10.1",
     "lil-gui": "^0.21.0",
-    "three": "^0.182.0"
+    "nouislider": "^15.8.1",
+    "rc-slider": "^11.1.9",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "three": "^0.182.0",
+    "tweakpane": "^4.0.5"
   }
 }
