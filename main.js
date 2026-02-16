@@ -466,7 +466,8 @@ function animate(t) {
         
         uniforms.u_constant.value.x = ap.xMin + (ap.xMax - ap.xMin) * wave;
         uniforms.u_constant.value.y = ap.yMin + (ap.yMax - ap.yMin) * wave;
-        
+        uniforms.u_constant.value.z = ap.zMin + (ap.zMax - ap.zMin) * wave;
+        uniforms.u_constant.value.w = ap.wMin + (ap.wMax - ap.wMin) * wave;
     }
 
     if (document.pointerLockElement === renderer.domElement) {
