@@ -4,7 +4,7 @@ An interactive 3D fractal explorer built with **Three.js** and custom **GLSL** s
 
 ## 🚀 Live Demo
 Project hosted on Render: [See my work!](https://holographic-fractal-3d-explorer.onrender.com)  
-*Note: Please allow camera access to experience the VisionAR head-tracking effect.*
+*Note: Please allow camera access to experience the holographic 3D head-tracking effect.*
 
 ## ✨ Key Features
 * **Full Fractal Control:** Choose from multiple fractal types (e.g., Mandelbulb, Julia Sets). All mathematical parameters—such as Power, Iterations, and Smoothing—are fully adjustable in real-time.
