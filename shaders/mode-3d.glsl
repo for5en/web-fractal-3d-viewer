@@ -2,13 +2,11 @@ float aspect = u_resolution.x / u_resolution.y;
 vec2 screen_coords = (vUv * 2.0 - 1.0);
 screen_coords.x *= aspect;
 
-// Kierunek promienia (taki sam dla obu oczu, bo patrzymy na ten sam piksel monitora)
 vec3 ray_dir = normalize(u_forward + screen_coords.x * u_fov * u_right + screen_coords.y * u_fov * u_up);
 
 float step_multiplier = 1.0 / u_accuracy;
 
-// --- RENDERING LEWEGO OKA (CZERWONY) ---
-vec3 zL = u_leye; // Startujemy z pozycji lewego oka
+vec3 zL = u_leye;
 float total_distL = 0.0;
 bool hitL = false;
 
@@ -25,8 +23,7 @@ for (int i = 0; i < int(u_steps); i++)
 }
 vec3 colorL = calculate_color(hitL, zL).rgb;
 
-// --- RENDERING PRAWEGO OKA (TURKUSOWY) ---
-vec3 zR = u_reye; // Startujemy z pozycji prawego oka
+vec3 zR = u_reye;
 float total_distR = 0.0;
 bool hitR = false;
 
@@ -43,6 +40,14 @@ for (int i = 0; i < int(u_steps); i++)
 }
 vec3 colorR = calculate_color(hitR, zR).rgb;
 
-// --- SKŁADANIE ANAGLIFU ---
-// Czerwony z lewego oka, Zielony i Niebieski z prawego
-gl_FragColor = vec4(colorL.r, colorR.g, colorR.b, 1.0);
+float left_gray  = (colorL.r * 0.30 + colorL.g * 0.59 + colorL.b * 0.11);
+float right_gray = (colorR.r * 0.30 + colorR.g * 0.59 + colorR.b * 0.11);
+
+vec4 final_col = vec4(left_gray, right_gray, right_gray, 1.0);
+
+float ghost_fix = 0.15; 
+final_col.r = clamp(final_col.r - (right_gray * ghost_fix), 0.0, 1.0);
+
+final_col.rgb *= pow(16.0 * vUv.x * vUv.y * (1.0 - vUv.x) * (1.0 - vUv.y), 0.3);
+
+gl_FragColor = 1.5 * pow(final_col, vec4(0.6, 0.6, 0.6, 1.0));

@@ -25,6 +25,7 @@ uniform float u_threshold;
 // 3D Anaglif
 uniform vec3 u_leye;
 uniform vec3 u_reye;
+uniform float u_ipd;
 
 varying vec2 vUv;
 

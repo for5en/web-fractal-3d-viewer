@@ -5,7 +5,14 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
 
-// --- 1. IMPORTY ZASOBÓW (Vite ?raw) ---
+
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 1. ASSET IMPORT & SHADER PREPARATION  ---
+//
+///////////////////////////////////////////////////////////////////////////////
+
 import vertexShader from './shaders/vertex.glsl?raw';
 
 const baseShaderFile = import.meta.glob('./shaders/base-shader.glsl', { query: '?raw', eager: true });
@@ -21,11 +28,6 @@ const fractalFiles = import.meta.glob('./shaders/fractals/*.glsl', { query: '?ra
 const effectFiles = import.meta.glob('./shaders/effects/*.glsl', { query: '?raw', eager: true });
 const coloringFiles = import.meta.glob('./shaders/colorings/*.glsl', { query: '?raw', eager: true });
 
-
-// --- 2. PRZYGOTOWANIE DANYCH (Z zachowaniem kolejności) ---
-
-
-
 const formatName = (name) => {
     return name
         .replace(/^\d+-/, '') 
@@ -36,14 +38,11 @@ const formatName = (name) => {
 const processFiles = (files) => {
     const data = {};
     const options = {};
-
-    
     const sortedPaths = Object.keys(files).sort();
 
     sortedPaths.forEach(path => {
         const fileName = path.split('/').pop().replace('.glsl', ''); 
         const prettyName = formatName(fileName); 
-        
         data[fileName] = files[path].default;
         options[prettyName] = fileName; 
     });
@@ -64,7 +63,13 @@ const colorings = coloringResult.data;
 const coloringOptions = coloringResult.options;
 
 
-// --- 3. CONFIG I UNIFORMY ---
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 2. INITIAL CONFIGURATION & UNIFORMS  ---
+//
+///////////////////////////////////////////////////////////////////////////////
+
 const config = {
     time_speed: 1.0,
     movement_speed: 1.0,
@@ -72,13 +77,14 @@ const config = {
     activeFractal: Object.values(fractalOptions)[0],
     activeEffect: Object.values(effectOptions)[0],
     activeColor: Object.values(coloringOptions)[0],
-    effectIntensity: 0,
+    effectIntensity: 0.0,
 
     cameraAnimationEnabled: false,
     cameraAnimationParams: { x: 0, y: 0, z: 0 },
     fractalAnimationEnabled: false,
     fractalAnimationParams: { speed: 1, powerMin: 1, powerMax: 2, xMin: -0.5, xMax: 0.5, yMin: -0.5, yMax: 0.5, zMin: -0.5, zMax: 0.5, wMin: -0.5, wMax: 0.5 },
-    visionAREnabled: false,
+    holographicModeEnabled: false,
+    anaglyph3DEnabled: false
 };
 
 const uniforms = {
@@ -104,10 +110,19 @@ const uniforms = {
     u_bailout: { value: 5.0 },
     u_threshold: { value: 0.001 },
 
-    // 3D Anaglif
+    // Super 3D
     u_leye: { value: new THREE.Vector3() },
-    u_reye: { value: new THREE.Vector3() }
+    u_reye: { value: new THREE.Vector3() },
+    u_ipd: { value: 0.08 }
 };
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 3. STATE MANAGEMENT  ---
+//
+///////////////////////////////////////////////////////////////////////////////
 
 const fractalStates = {};
 
@@ -129,21 +144,23 @@ Object.keys(fractals).forEach(key => {
             u_steps: uniforms.u_steps.value,
             u_accuracy: uniforms.u_accuracy.value,
             u_bailout: uniforms.u_bailout.value,
-            u_threshold: uniforms.u_threshold.value
+            u_threshold: uniforms.u_threshold.value,
+
+            u_leye: uniforms.u_leye.value.clone(),
+            u_reye: uniforms.u_reye.value.clone(),
+            u_ipd: uniforms.u_ipd.value
         }
     };
 });
 
+let prevFractal = config.activeFractal;
 
-let prevFractal = config.activeFractal;;
 function saveCurrentState() {
-    
     const state = fractalStates[prevFractal];
     if (!state) return;
 
     state.config = JSON.parse(JSON.stringify(config));
 
-    
     state.uniforms.u_fov = uniforms.u_fov.value;
 
     state.uniforms.u_pos.copy(uniforms.u_pos.value);
@@ -159,15 +176,17 @@ function saveCurrentState() {
     state.uniforms.u_accuracy = uniforms.u_accuracy.value;
     state.uniforms.u_bailout = uniforms.u_bailout.value;
     state.uniforms.u_threshold = uniforms.u_threshold.value;
+
+    state.uniforms.u_leye.copy(uniforms.u_leye.value);
+    state.uniforms.u_reye.copy(uniforms.u_leye.value);
+    state.uniforms.u_ipd = uniforms.u_ipd.value;
 }
 
 function loadFractalState(selectedKey) {
     const state = fractalStates[selectedKey];
     if (!state) return;
 
-    
     const savedConfig = JSON.parse(JSON.stringify(state.config));
-    
     
     config.time_speed = savedConfig.time_speed;
     config.movement_speed = savedConfig.movement_speed;
@@ -176,15 +195,13 @@ function loadFractalState(selectedKey) {
     config.activeColor = savedConfig.activeColor;
     config.activeEffect = savedConfig.activeEffect;
     
-    
     Object.assign(config.fractalAnimationParams, savedConfig.fractalAnimationParams);
-    
     
     config.fractalAnimationEnabled = savedConfig.fractalAnimationEnabled;
     config.cameraAnimationEnabled = savedConfig.cameraAnimationEnabled;
-    config.visionAREnabled = savedConfig.visionAREnabled;
+    config.holographicModeEnabled = savedConfig.holographicModeEnabled;
+    config.anaglyph3DEnabled = savedConfig.anaglyph3DEnabled;
 
-    
     uniforms.u_fov.value = state.uniforms.u_fov;
     uniforms.u_power.value = state.uniforms.u_power;
     uniforms.u_iterations.value = state.uniforms.u_iterations;
@@ -199,20 +216,28 @@ function loadFractalState(selectedKey) {
     uniforms.u_right.value.copy(state.uniforms.u_right);
     uniforms.u_constant.value.copy(state.uniforms.u_constant);
 
+    uniforms.u_leye.value.copy(state.uniforms.u_leye);
+    uniforms.u_reye.value.copy(state.uniforms.u_leye);
+    uniforms.u_ipd.value = state.uniforms.u_ipd;
     
     gui.controllersRecursive().forEach(c => c.updateDisplay());
 }
 
-const world_up = new THREE.Vector3(0.0, 1.0, 0.0);
-const keys = {};
 
-// --- 4. FUNKCJE SYSTEMOWE (Assembler i Sync) ---
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 4. RENDERING & SHADER ASSEMBLY  ---
+//
+///////////////////////////////////////////////////////////////////////////////
+
 function getComposedShader() {
     let shader = baseShaderSource;
-    shader = shader.replace('#include <FRACTAL_DE>', fractals[config.activeFractal]);
+    const fractalCode = fractals[config.activeFractal];
+
+    shader = shader.replace('#include <FRACTAL_DE>', fractalCode);
     shader = shader.replace('#include <COLORING_LOGIC>', colorings[config.activeColor]);
-    
-    if(config.visionAREnabled) shader = shader.replace('#include <SHADER_MODE>', mode3dShaderSource);
+    if(config.anaglyph3DEnabled) shader = shader.replace('#include <SHADER_MODE>', mode3dShaderSource);
     else shader = shader.replace('#include <SHADER_MODE>', modeNormalShaderSource);
 
     return shader;
@@ -223,7 +248,6 @@ function syncShader() {
     mesh.material.needsUpdate = true;
 }
 
-// --- 5. INICJALIZACJA THREE.JS (Core) ---
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -231,7 +255,6 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 
-// --- 6. OBIEKTY SCENY I POST-PROCESSING ---
 const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(2, 2),
     new THREE.ShaderMaterial({
@@ -267,7 +290,26 @@ const customPass = new ShaderPass({
 });
 composer.addPass(customPass);
 
-// --- 7. GUI (Interfejs) ---
+function updateCustomPass()
+{
+    customPass.uniforms.u_time.value = uniforms.u_time.value;
+    customPass.uniforms.u_resolution.value = uniforms.u_resolution.value;
+
+    customPass.uniforms.u_intensity.value = config.effectIntensity;
+
+    customPass.uniforms.u_pos.value = uniforms.u_pos.value;
+    customPass.uniforms.u_fov.value = uniforms.u_fov.value;
+    customPass.uniforms.u_forward.value = uniforms.u_forward.value;
+    customPass.uniforms.u_up.value = uniforms.u_up.value;
+    customPass.uniforms.u_right.value = uniforms.u_right.value;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 5. USER INTERFACE (GUI)  ---
+//
+///////////////////////////////////////////////////////////////////////////////
+
 const gui = new GUI();
 
 const addDynamicSliderAbs = (folder, target, prop, min, max, step, name) => {
@@ -291,78 +333,54 @@ const addDynamicSlider = (folder, target, prop, min, max, step, name) => {
 };
 
 const addRangeSlider = (folder, target, propMin, propMax, min, max, step, name) => {
-    
     const controllers = {};
-
-    
     controllers.min = folder.add(target, propMin, min, max, step).name(name + ' Min').listen();
     controllers.min.onFinishChange(val => {
         const v = Math.abs(val);
-        
         controllers.min.max(Math.max(max, Math.min(max * 20, v * 1.5)));
         controllers.min.min(Math.min(min, Math.max(min * 20, -v * 1.5)));
-        
-        
         if (target[propMin] > target[propMax]) {
             target[propMax] = target[propMin];
         }
-        
-        
     });
-
-    
     controllers.max = folder.add(target, propMax, min, max, step).name(name + ' Max').listen();
     controllers.max.onFinishChange(val => {
         const v = Math.abs(val);
-        
         controllers.max.max(Math.max(max, Math.min(max * 20, v * 1.5)));
         controllers.max.min(Math.min(min, Math.max(min * 20, -v * 1.5)));
-        
-        
         if (target[propMax] < target[propMin]) {
             target[propMin] = target[propMax];
         }
-
-        
     });
-
     return controllers;
 };
-
 
 const cameraFolder = gui.addFolder('Camera');
 addDynamicSliderAbs(cameraFolder, uniforms.u_fov, 'value', 0, 3, 0.01).name('Fov');
 addDynamicSliderAbs(cameraFolder, config, 'time_speed', 0, 5, 0.01).name('Time speed');
 addDynamicSliderAbs(cameraFolder, config, 'mouse_sensitivity', 1, 5, 0.1).name('Mouse Sensitivity');
 addDynamicSliderAbs(cameraFolder, config, 'movement_speed', 1, 5, 0.1).name('Movement Speed');
+addDynamicSliderAbs(cameraFolder, uniforms.u_ipd, 'value', 0, 1, 0.01).name('Ipd');
 
 const shaderFolder = gui.addFolder('Fractal');
 shaderFolder.add(config, 'activeFractal', fractalOptions)
     .name('Choose fractal')
     .onChange((newFractalKey) => {
-        
         saveCurrentState(); 
-
-        
         loadFractalState(newFractalKey);
-
-        
         prevFractal = newFractalKey;
-
-        
         syncShader();
         if(config.fractalAnimationEnabled)
         {
-            fractalAnimationFolder.show();
-            fractalAnimationFolder.open();
+            fractalAnimationFolder.show().open();
             fractalFolder.hide();
         }
         else
         {
-            fractalFolder.show();
-            fractalFolder.open();
+            fractalFolder.show().open();
             fractalAnimationFolder.hide();
         }
+        if(!config.holographicModeEnabled) anaglyphController.hide();
     });
 
 shaderFolder.add(config, 'activeColor', coloringOptions).name('Coloring Style').onChange(syncShader);
@@ -400,29 +418,54 @@ folderEffect.add(config, 'activeEffect', effectOptions).name('Choose effect').on
     customPass.material.fragmentShader = effects[val];
     customPass.material.needsUpdate = true;
 });
-folderEffect.add(config, 'effectIntensity', 0, 1).name('Effect intensity');
+folderEffect.add(config, 'effectIntensity', 0, 1).name('Effect intensity').listen();
 
 const folderSpecial = gui.addFolder('Special');
-folderSpecial.add(config, 'cameraAnimationEnabled').name('Camera animation').onChange();
-folderSpecial.add(config, 'fractalAnimationEnabled').name('Fractal animation').onChange( enabled => {
+folderSpecial.add(config, 'cameraAnimationEnabled').name('Camera Animation').onChange();
+folderSpecial.add(config, 'fractalAnimationEnabled').name('Fractal Animation').onChange( enabled => {
     if(enabled)
     {
-        fractalAnimationFolder.show();
-        fractalAnimationFolder.open();
+        fractalAnimationFolder.show().open();
         fractalFolder.hide();
     }
     else
     {
-        fractalFolder.show();
-        fractalFolder.open();
+        fractalFolder.show().open();
         fractalAnimationFolder.hide();
     }
 });
 
-folderSpecial.add(config, 'visionAREnabled').name('Vision AR animation').onChange(syncShader);
+folderSpecial.add(config, 'holographicModeEnabled')
+    .name('Holographic Mode')
+    .listen()
+    .onChange((enabled) => {
+        if (enabled) {
+            anaglyphController.show();
+        } else {
+            config.anaglyph3DEnabled = false;
+            anaglyphController.hide();
+        }
+        syncShader();
+    });
+
+const anaglyphController = folderSpecial.add(config, 'anaglyph3DEnabled')
+    .name('Anaglyph 3D')
+    .onChange(syncShader)
+    .listen()
+    .disable()
+    .hide();
 
 
-// --- 8. EVENT LISTENERS ---
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 6. INPUT HANDLING & EVENT LISTENERS  ---
+//
+///////////////////////////////////////////////////////////////////////////////
+
+const world_up = new THREE.Vector3(0.0, 1.0, 0.0);
+const keys = {};
+
 window.addEventListener('resize', () => {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -463,17 +506,23 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 
-//////////////////////////////////////////////
 
-// Globalny obiekt z danymi dla Twoich shaderów
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 7. FACE TRACKING (VISION AR)  ---
+//
+///////////////////////////////////////////////////////////////////////////////
+
 let faceData = {
-    x: 0.5,       // Środek między oczami (0-1)
+    x: 0.5,
     y: 0.5,
-    distance: 0,  // "Głębia" (rozpiętość oczu)
+    distance: 0,
     detected: false
 };
 
 let faceLandmarker;
+let isInitializing = false;
 let video;
 
 async function setupFaceTracking() {
@@ -494,27 +543,26 @@ async function setupFaceTracking() {
     const stream = await navigator.mediaDevices.getUserMedia({ video: true });
     video.srcObject = stream;
     video.play();
+    anaglyphController.enable();
 }
 
 function updateFaceTracking() {
-    if (!faceLandmarker || !video || video.readyState < 2) return;
+    if (!faceLandmarker || !video || video.readyState < 2)
+    {
+        faceData.detected = false;
+        return;
+    }
 
     const results = faceLandmarker.detectForVideo(video, performance.now());
     
     if (results.faceLandmarks && results.faceLandmarks.length > 0) {
         const points = results.faceLandmarks[0];
-        
-        // Źrenice (MediaPipe Face Mesh)
         const leftEye = points[468]; 
         const rightEye = points[473];
 
         faceData.x = (leftEye.x + rightEye.x) / 2;
         faceData.y = (leftEye.y + rightEye.y) / 2;
-
-        // Obliczamy kąt nachylenia głowy (Roll)
         faceData.roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
-
-        // Surowe punkty do dalszych obliczeń
         faceData.leftEyeRaw = leftEye;
         faceData.rightEyeRaw = rightEye;
 
@@ -530,23 +578,20 @@ function updateFaceTracking() {
     }
 }
 
-// Odpalenie kamery
-setupFaceTracking();
 
 
+///////////////////////////////////////////////////////////////////////////////
+//
+//        --- 8. ANIMATION LOOP & CORE LOGIC  ---
+//
+///////////////////////////////////////////////////////////////////////////////
 
-
-// --- 9. PĘTLA ANIMACJI ---
 let time = 0.0;
 let prev_t = performance.now();
 
 let smoothedFace = { x: 0.5, y: 0.5, z: 0.1 };
-const FACE_LERP = 0.5; // Czułość wygładzania (0.01 - 0.2)
-const LOOK_SENSITIVITY = 0.5;
-
-let currentRadiusFiltered = 0;
-let startFaceDist = -1; // Zapamiętamy, gdzie była twarz na początku
-let initialRadius = -1; // Zapamiętamy, jak daleko był fraktal na początku
+const FACE_LERP = 0.5;
+let startFaceDist = -1;
 
 function animate(t) {
     requestAnimationFrame(animate);
@@ -556,7 +601,6 @@ function animate(t) {
     prev_t = t;
     time += dt * config.time_speed;
 
-    // --- LOGIKA WASD ---
     if (document.pointerLockElement === renderer.domElement) {
         const moveSpeed = dt * config.movement_speed / 3.0;
         const pos = uniforms.u_pos.value;
@@ -575,78 +619,48 @@ function animate(t) {
     let base_rgt = uniforms.u_right.value.clone();
     let base_up = uniforms.u_up.value.clone();
 
-    if(config.visionAREnabled) {
-        updateFaceTracking();    
+    if(config.holographicModeEnabled) 
+    {
+        console.log(config.anaglyph3DEnabled,config.holographicModeEnabled, faceData.detected, uniforms.u_ipd.value);
+        if(!video && !isInitializing)
+        {
+            setupFaceTracking();
+            isInitializing = true;
+        }
+        updateFaceTracking(); 
         if (faceData.detected) {
-            // 1. Wygładzanie X i Y
             smoothedFace.x += (faceData.x - smoothedFace.x) * FACE_LERP;
             smoothedFace.y += (faceData.y - smoothedFace.y) * FACE_LERP;
+            smoothedFace.z += (faceData.distance - smoothedFace.z) * 0.1;
 
-            // 2. Inicjalizacja punktu odniesienia
-            if (startFaceDist === -1) {
-                startFaceDist = faceData.distance;
-                initialRadius = base_pos.length();
-                currentRadiusFiltered = initialRadius;
-            }
+            if (startFaceDist === -1) startFaceDist = faceData.distance;
 
-            // 3. Wygładzanie odczytu z kamery (usuwa pulsowanie)
-            smoothedFace.z += (faceData.distance - smoothedFace.z) * 0.1; 
+            const sensitivity = 5.0; 
+            const dx = (0.5 - smoothedFace.x) * sensitivity;
+            const dy = (0.5 - smoothedFace.y) * sensitivity;
+            const dz = (smoothedFace.z - startFaceDist) * 10.0;
 
-            // 4. Obliczanie zmiany dystansu (Delta względem STARTU)
-            // 4. Obliczanie zmiany dystansu
-            const zoom_sensitivity = 8.0; // Było 25, dajemy 80 lub nawet 100
-            const deltaZ = smoothedFace.z - startFaceDist;
+            let temp_pos = base_pos.clone()
+                .addScaledVector(base_rgt, dx)
+                .addScaledVector(base_up, dy)
+                .addScaledVector(base_fwd, dz);
 
-            let target_radius = initialRadius - (deltaZ * zoom_sensitivity);
-            
-            // target_radius to miejsce, w którym kamera CHCE być
-            target_radius = Math.max(0.1, target_radius);
-            
-            // 5. Płynne dążenie do celu (usuwa drgania)
-            currentRadiusFiltered = target_radius;
-            //currentRadiusFiltered += (target_radius - currentRadiusFiltered) * 1.5;
+            const focusDist = 5.0; 
+            let screen_center = base_pos.clone().addScaledVector(base_fwd, focusDist);
+            let temp_fwd = screen_center.clone().sub(temp_pos).normalize();
 
-            // 6. Orbitowanie (Johnny Lee)
-            let temp_pos = new THREE.Vector3(0, 0, currentRadiusFiltered); 
-            const angleX = (0.5 - smoothedFace.x) * LOOK_SENSITIVITY * 2.0; 
-            const angleY = -(0.5 - smoothedFace.y) * LOOK_SENSITIVITY * 2.0; 
-            const euler = new THREE.Euler(angleY, angleX, 0, 'YXZ');
-            temp_pos.applyEuler(euler);
-            
-            const base_quat = new THREE.Quaternion().setFromUnitVectors(
-                new THREE.Vector3(0,0,1), 
-                base_pos.clone().normalize()
-            );
-            temp_pos.applyQuaternion(base_quat);
+            let eyeL = temp_pos.clone().addScaledVector(base_rgt, uniforms.u_ipd.value * 0.5); 
+            let eyeR = temp_pos.clone().addScaledVector(base_rgt, -uniforms.u_ipd.value * 0.5);
 
-            // 7. Baza wektorów i Skrzywienie (Skew)
-            let toCenter = temp_pos.clone().negate().normalize();
-            let worldUp = new THREE.Vector3(0, 1, 0);
-            if (Math.abs(toCenter.y) > 0.95) worldUp.set(0, 0, 1);
-            let temp_rgt = new THREE.Vector3().crossVectors(toCenter, worldUp).normalize();
-            let temp_up = new THREE.Vector3().crossVectors(temp_rgt, toCenter).normalize();
-
-            const skew_factor = 0.6;
-            let temp_fwd = toCenter.clone()
-                .addScaledVector(temp_rgt, (0.5 - smoothedFace.x) * skew_factor)
-                .addScaledVector(temp_up, -(0.5 - smoothedFace.y) * skew_factor)
-                .normalize();
-
-            // 8. Oczy (Anaglif)
-            const IPD = 0.15; 
-            let eyeL = temp_pos.clone().addScaledVector(temp_rgt, -IPD/2);
-            let eyeR = temp_pos.clone().addScaledVector(temp_rgt, IPD/2);
-
-            // 9. Wysyłka do Shadera
             uniforms.u_pos.value.copy(temp_pos);
-            uniforms.u_forward.value.copy(temp_fwd); 
-            uniforms.u_right.value.copy(temp_rgt);
-            uniforms.u_up.value.copy(temp_up);
+            uniforms.u_forward.value.copy(temp_fwd);
+            uniforms.u_right.value.copy(base_rgt);
+            uniforms.u_up.value.copy(base_up);
 
             if (uniforms.u_leye?.value) uniforms.u_leye.value.copy(eyeL);
             if (uniforms.u_reye?.value) uniforms.u_reye.value.copy(eyeR);
+
         } else {
-            // Jeśli zgubisz twarz, zresetuj startFaceDist, żeby po powrocie skalibrował się na nowo
             startFaceDist = -1;
         }
     }
@@ -662,12 +676,10 @@ function animate(t) {
         uniforms.u_constant.value.w = ap.wMin + (ap.wMax - ap.wMin) * wave;
     }
 
-    // Renderowanie
     uniforms.u_time.value = time;
-    console.log(uniforms.u_leye.value, uniforms.u_reye.value);
+    updateCustomPass();
     composer.render();
 
-    // Przywrócenie bazy (żeby WASD nie "wariowało" od orbitowania)
     uniforms.u_pos.value.copy(base_pos);
     uniforms.u_forward.value.copy(base_fwd);
     uniforms.u_right.value.copy(base_rgt);
@@ -675,50 +687,3 @@ function animate(t) {
 }
 
 animate();
-
-
-
-/*
-async function setupFaceTracking() {
-    // 1️⃣ Załaduj model Mediapipe
-    const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-    );
-    
-    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-            delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        numFaces: 1
-    });
-
-    // 2️⃣ Stwórz element video
-    video = document.createElement('video');
-
-    // 3️⃣ Poproś o zgodę na kamerę, aby enumerateDevices działało
-    await navigator.mediaDevices.getUserMedia({ video: true });
-
-    // 4️⃣ Znajdź Iriun Webcam po nazwie
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const iriun = devices.find(d => d.kind === "videoinput" && d.label.includes("Iriun"));
-    if (!iriun) {
-        console.error("Nie znaleziono Iriun Webcam");
-        return;
-    }
-
-    // 5️⃣ Pobierz stream z Iriun
-    const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-            deviceId: { exact: iriun.deviceId },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
-        }
-    });
-
-    video.srcObject = stream;
-    video.play();
-}
-*/
