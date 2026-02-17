@@ -29,7 +29,7 @@ vec4 calculate_color(bool hit, vec3 z)
 
     vec3 normal = calc_normal(z);
     // Światło nieco z boku i zza nas, żeby podkreślić rzeźbę
-    vec3 light_dir = normalize(vec3(0.8, 1.0, 0.8)); 
+    vec3 light_dir = normalize(vec3(-0.8, 1.0, -0.8)); 
     vec3 view_dir = normalize(u_pos - z);
     
     // 1. Cienie i AO

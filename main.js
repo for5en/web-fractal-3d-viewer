@@ -11,6 +11,12 @@ import vertexShader from './shaders/vertex.glsl?raw';
 const baseShaderFile = import.meta.glob('./shaders/base-shader.glsl', { query: '?raw', eager: true });
 const baseShaderSource = Object.values(baseShaderFile)[0].default;
 
+const mode3dShaderFile = import.meta.glob('./shaders/mode-3d.glsl', { query: '?raw', eager: true });
+const mode3dShaderSource = Object.values(mode3dShaderFile)[0].default;
+
+const modeNormalShaderFile = import.meta.glob('./shaders/mode-normal.glsl', { query: '?raw', eager: true });
+const modeNormalShaderSource = Object.values(modeNormalShaderFile)[0].default;
+
 const fractalFiles = import.meta.glob('./shaders/fractals/*.glsl', { query: '?raw', eager: true });
 const effectFiles = import.meta.glob('./shaders/effects/*.glsl', { query: '?raw', eager: true });
 const coloringFiles = import.meta.glob('./shaders/colorings/*.glsl', { query: '?raw', eager: true });
@@ -44,7 +50,6 @@ const processFiles = (files) => {
 
     return { data, options };
 };
-
 
 const fractalResult = processFiles(fractalFiles);
 const fractals = fractalResult.data;
@@ -100,8 +105,8 @@ const uniforms = {
     u_threshold: { value: 0.001 },
 
     // 3D Anaglif
-    u_leye: { x: 0, y: 0, z: 0 },
-    u_reye: { x: 0, y: 0, z: 0 }
+    u_leye: { value: new THREE.Vector3() },
+    u_reye: { value: new THREE.Vector3() }
 };
 
 const fractalStates = {};
@@ -206,6 +211,10 @@ function getComposedShader() {
     let shader = baseShaderSource;
     shader = shader.replace('#include <FRACTAL_DE>', fractals[config.activeFractal]);
     shader = shader.replace('#include <COLORING_LOGIC>', colorings[config.activeColor]);
+    
+    if(config.visionAREnabled) shader = shader.replace('#include <SHADER_MODE>', mode3dShaderSource);
+    else shader = shader.replace('#include <SHADER_MODE>', modeNormalShaderSource);
+
     return shader;
 }
 
@@ -409,7 +418,8 @@ folderSpecial.add(config, 'fractalAnimationEnabled').name('Fractal animation').o
         fractalAnimationFolder.hide();
     }
 });
-folderSpecial.add(config, 'visionAREnabled').name('Vision AR animation').onChange();
+
+folderSpecial.add(config, 'visionAREnabled').name('Vision AR animation').onChange(syncShader);
 
 
 // --- 8. EVENT LISTENERS ---
@@ -486,6 +496,188 @@ async function setupFaceTracking() {
     video.play();
 }
 
+function updateFaceTracking() {
+    if (!faceLandmarker || !video || video.readyState < 2) return;
+
+    const results = faceLandmarker.detectForVideo(video, performance.now());
+    
+    if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        const points = results.faceLandmarks[0];
+        
+        // Źrenice (MediaPipe Face Mesh)
+        const leftEye = points[468]; 
+        const rightEye = points[473];
+
+        faceData.x = (leftEye.x + rightEye.x) / 2;
+        faceData.y = (leftEye.y + rightEye.y) / 2;
+
+        // Obliczamy kąt nachylenia głowy (Roll)
+        faceData.roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+
+        // Surowe punkty do dalszych obliczeń
+        faceData.leftEyeRaw = leftEye;
+        faceData.rightEyeRaw = rightEye;
+
+        faceData.distance = Math.sqrt(
+            Math.pow(rightEye.x - leftEye.x, 2) +
+            Math.pow(rightEye.y - leftEye.y, 2) +
+            Math.pow(rightEye.z - leftEye.z, 2)
+        );
+        
+        faceData.detected = true;
+    } else {
+        faceData.detected = false;
+    }
+}
+
+// Odpalenie kamery
+setupFaceTracking();
+
+
+
+
+// --- 9. PĘTLA ANIMACJI ---
+let time = 0.0;
+let prev_t = performance.now();
+
+let smoothedFace = { x: 0.5, y: 0.5, z: 0.1 };
+const FACE_LERP = 0.5; // Czułość wygładzania (0.01 - 0.2)
+const LOOK_SENSITIVITY = 0.5;
+
+let currentRadiusFiltered = 0;
+let startFaceDist = -1; // Zapamiętamy, gdzie była twarz na początku
+let initialRadius = -1; // Zapamiętamy, jak daleko był fraktal na początku
+
+function animate(t) {
+    requestAnimationFrame(animate);
+    if (!t) return;
+
+    const dt = (t - prev_t) * 0.001;
+    prev_t = t;
+    time += dt * config.time_speed;
+
+    // --- LOGIKA WASD ---
+    if (document.pointerLockElement === renderer.domElement) {
+        const moveSpeed = dt * config.movement_speed / 3.0;
+        const pos = uniforms.u_pos.value;
+        const fwd = uniforms.u_forward.value;
+        const rgt = uniforms.u_right.value;
+        if (keys['w']) pos.addScaledVector(fwd, moveSpeed);
+        if (keys['s']) pos.addScaledVector(fwd, -moveSpeed);
+        if (keys['d']) pos.addScaledVector(rgt, moveSpeed);
+        if (keys['a']) pos.addScaledVector(rgt, -moveSpeed);
+        if (keys[' ']) pos.addScaledVector(world_up, moveSpeed);
+        if (keys['shift']) pos.addScaledVector(world_up, -moveSpeed);
+    }
+
+    let base_pos = uniforms.u_pos.value.clone();
+    let base_fwd = uniforms.u_forward.value.clone();
+    let base_rgt = uniforms.u_right.value.clone();
+    let base_up = uniforms.u_up.value.clone();
+
+    if(config.visionAREnabled) {
+        updateFaceTracking();    
+        if (faceData.detected) {
+            // 1. Wygładzanie X i Y
+            smoothedFace.x += (faceData.x - smoothedFace.x) * FACE_LERP;
+            smoothedFace.y += (faceData.y - smoothedFace.y) * FACE_LERP;
+
+            // 2. Inicjalizacja punktu odniesienia
+            if (startFaceDist === -1) {
+                startFaceDist = faceData.distance;
+                initialRadius = base_pos.length();
+                currentRadiusFiltered = initialRadius;
+            }
+
+            // 3. Wygładzanie odczytu z kamery (usuwa pulsowanie)
+            smoothedFace.z += (faceData.distance - smoothedFace.z) * 0.1; 
+
+            // 4. Obliczanie zmiany dystansu (Delta względem STARTU)
+            // 4. Obliczanie zmiany dystansu
+            const zoom_sensitivity = 8.0; // Było 25, dajemy 80 lub nawet 100
+            const deltaZ = smoothedFace.z - startFaceDist;
+
+            let target_radius = initialRadius - (deltaZ * zoom_sensitivity);
+            
+            // target_radius to miejsce, w którym kamera CHCE być
+            target_radius = Math.max(0.1, target_radius);
+            
+            // 5. Płynne dążenie do celu (usuwa drgania)
+            currentRadiusFiltered = target_radius;
+            //currentRadiusFiltered += (target_radius - currentRadiusFiltered) * 1.5;
+
+            // 6. Orbitowanie (Johnny Lee)
+            let temp_pos = new THREE.Vector3(0, 0, currentRadiusFiltered); 
+            const angleX = (0.5 - smoothedFace.x) * LOOK_SENSITIVITY * 2.0; 
+            const angleY = -(0.5 - smoothedFace.y) * LOOK_SENSITIVITY * 2.0; 
+            const euler = new THREE.Euler(angleY, angleX, 0, 'YXZ');
+            temp_pos.applyEuler(euler);
+            
+            const base_quat = new THREE.Quaternion().setFromUnitVectors(
+                new THREE.Vector3(0,0,1), 
+                base_pos.clone().normalize()
+            );
+            temp_pos.applyQuaternion(base_quat);
+
+            // 7. Baza wektorów i Skrzywienie (Skew)
+            let toCenter = temp_pos.clone().negate().normalize();
+            let worldUp = new THREE.Vector3(0, 1, 0);
+            if (Math.abs(toCenter.y) > 0.95) worldUp.set(0, 0, 1);
+            let temp_rgt = new THREE.Vector3().crossVectors(toCenter, worldUp).normalize();
+            let temp_up = new THREE.Vector3().crossVectors(temp_rgt, toCenter).normalize();
+
+            const skew_factor = 0.6;
+            let temp_fwd = toCenter.clone()
+                .addScaledVector(temp_rgt, (0.5 - smoothedFace.x) * skew_factor)
+                .addScaledVector(temp_up, -(0.5 - smoothedFace.y) * skew_factor)
+                .normalize();
+
+            // 8. Oczy (Anaglif)
+            const IPD = 0.15; 
+            let eyeL = temp_pos.clone().addScaledVector(temp_rgt, -IPD/2);
+            let eyeR = temp_pos.clone().addScaledVector(temp_rgt, IPD/2);
+
+            // 9. Wysyłka do Shadera
+            uniforms.u_pos.value.copy(temp_pos);
+            uniforms.u_forward.value.copy(temp_fwd); 
+            uniforms.u_right.value.copy(temp_rgt);
+            uniforms.u_up.value.copy(temp_up);
+
+            if (uniforms.u_leye?.value) uniforms.u_leye.value.copy(eyeL);
+            if (uniforms.u_reye?.value) uniforms.u_reye.value.copy(eyeR);
+        } else {
+            // Jeśli zgubisz twarz, zresetuj startFaceDist, żeby po powrocie skalibrował się na nowo
+            startFaceDist = -1;
+        }
+    }
+
+    if (config.fractalAnimationEnabled) {
+        const ap = config.fractalAnimationParams;
+        const wave = (Math.sin(time) + 1.0) * 0.5; 
+
+        uniforms.u_power.value = ap.powerMin + (ap.powerMax - ap.powerMin) * wave;
+        uniforms.u_constant.value.x = ap.xMin + (ap.xMax - ap.xMin) * wave;
+        uniforms.u_constant.value.y = ap.yMin + (ap.yMax - ap.yMin) * wave;
+        uniforms.u_constant.value.z = ap.zMin + (ap.zMax - ap.zMin) * wave;
+        uniforms.u_constant.value.w = ap.wMin + (ap.wMax - ap.wMin) * wave;
+    }
+
+    // Renderowanie
+    uniforms.u_time.value = time;
+    console.log(uniforms.u_leye.value, uniforms.u_reye.value);
+    composer.render();
+
+    // Przywrócenie bazy (żeby WASD nie "wariowało" od orbitowania)
+    uniforms.u_pos.value.copy(base_pos);
+    uniforms.u_forward.value.copy(base_fwd);
+    uniforms.u_right.value.copy(base_rgt);
+    uniforms.u_up.value.copy(base_up);
+}
+
+animate();
+
+
+
 /*
 async function setupFaceTracking() {
     // 1️⃣ Załaduj model Mediapipe
@@ -530,162 +722,3 @@ async function setupFaceTracking() {
     video.play();
 }
 */
-
-function updateFaceTracking() {
-    if (!faceLandmarker || !video || video.readyState < 2) return;
-
-    const results = faceLandmarker.detectForVideo(video, performance.now());
-    
-    if (results.faceLandmarks && results.faceLandmarks.length > 0) {
-        const points = results.faceLandmarks[0];
-        
-        // Punkty 33 i 263 to wewnętrzne kąciki oczu
-        const leftEye = points[33];
-        const rightEye = points[263];
-
-        // 1. Środek między oczami (X, Y)
-        faceData.x = (leftEye.x + rightEye.x) / 2;
-        faceData.y = (leftEye.y + rightEye.y) / 2;
-
-        // 2. Odległość (Dystans euklidesowy 3D między oczami)
-        // Im większy wynik, tym twarz jest bliżej kamery
-        faceData.distance = Math.sqrt(
-            Math.pow(rightEye.x - leftEye.x, 2) +
-            Math.pow(rightEye.y - leftEye.y, 2) +
-            Math.pow(rightEye.z - leftEye.z, 2)
-        );
-        
-        faceData.detected = true;
-    } else {
-        faceData.detected = false;
-    }
-}
-
-// Odpalenie kamery
-setupFaceTracking();
-
-
-
-
-// --- 9. PĘTLA ANIMACJI ---
-let time = 0.0;
-let prev_t = performance.now();
-
-let smoothedFace = { x: 0.5, y: 0.5, z: 0.1 };
-const FACE_LERP = 0.5; // Czułość wygładzania (0.01 - 0.2)
-const LOOK_SENSITIVITY = 0.5;
-
-function animate(t) {
-    requestAnimationFrame(animate);
-    if (!t) return;
-
-    const dt = (t - prev_t) * 0.001;
-    prev_t = t;
-    time += dt * config.time_speed;
-
-    if (document.pointerLockElement === renderer.domElement) {
-        const moveSpeed = dt * config.movement_speed / 3.0;
-        const pos = uniforms.u_pos.value;
-        const fwd = uniforms.u_forward.value;
-        const rgt = uniforms.u_right.value;
-
-        if (keys['w']) pos.addScaledVector(fwd, moveSpeed);
-        if (keys['s']) pos.addScaledVector(fwd, -moveSpeed);
-        if (keys['d']) pos.addScaledVector(rgt, moveSpeed);
-        if (keys['a']) pos.addScaledVector(rgt, -moveSpeed);
-        if (keys[' ']) pos.addScaledVector(world_up, moveSpeed);
-        if (keys['shift']) pos.addScaledVector(world_up, -moveSpeed);
-    }
-
-    let base_pos = uniforms.u_pos.value.clone();
-    let base_fwd = uniforms.u_forward.value.clone();
-    let base_rgt = uniforms.u_right.value.clone();
-    let base_up = uniforms.u_up.value.clone();
-
-    if(config.visionAREnabled)
-    {
-        updateFaceTracking();    
-        if (faceData.detected) {
-            // 1. Wygładzanie (Dodaj inicjalizację smoothedFace.z = 0.5 jeśli wcześniej jej nie było)
-            smoothedFace.x += (faceData.x - smoothedFace.x) * FACE_LERP;
-            smoothedFace.y += (faceData.y - smoothedFace.y) * FACE_LERP;
-
-
-            if (smoothedFace.z === 0.1) smoothedFace.z = faceData.distance; 
-
-            // 2. Oblicz różnicę (offset) względem momentu startu lub neutralnego punktu
-            // Zamiast sztywnego 0.5, używamy wartości, którą "widzi" kamera gdy siedzisz prosto.
-            const zoom_sensitivity = 5.0; 
-            const deltaZ = faceData.distance - smoothedFace.z; // Różnica w przybliżeniu twarzy
-
-            // Teraz modyfikujemy bazowy dystans o tę różnicę
-            let current_radius = base_pos.length() - (deltaZ * zoom_sensitivity);
-
-            // Clamp dla bezpieczeństwa
-            current_radius = Math.max(0.1, current_radius);
-
-            // 3. Pozycja kamery (Orbitowanie)
-            let temp_pos = new THREE.Vector3(0, 0, current_radius); // Startujemy z osi Z
-            
-            const angleX = (0.5 - smoothedFace.x) * LOOK_SENSITIVITY * 2.0; 
-            const angleY = -(0.5 - smoothedFace.y) * LOOK_SENSITIVITY * 2.0; 
-
-            // Prawidłowa kolejność obrotów dla stabilności: najpierw Y (góra-dół), potem X (lewo-prawo)
-            const euler = new THREE.Euler(angleY, angleX, 0, 'YXZ');
-            temp_pos.applyEuler(euler);
-            
-            // Obracamy też wektor bazowy, żeby zachować orientację względem base_pos
-            const base_quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), base_pos.clone().normalize());
-            temp_pos.applyQuaternion(base_quat);
-
-            // 4. --- PANCERNA REKONSTRUKCJA WEKTORÓW ---
-            let toCenter = temp_pos.clone().negate().normalize();
-            
-            // Używamy "bezpiecznego up" — jeśli patrzymy pionowo w górę, zmieniamy oś pomocniczą
-            let up_guide = Math.abs(toCenter.y) > 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
-            
-            let temp_rgt = new THREE.Vector3().crossVectors(toCenter, up_guide).normalize();
-            let temp_up = new THREE.Vector3().crossVectors(temp_rgt, toCenter).normalize();
-
-            // 5. Skrzywienie (Johnny Lee)
-            const skew_factor = 0.6;
-            let skew_x = (0.5 - smoothedFace.x) * skew_factor;
-            let skew_y = (0.5 - smoothedFace.y) * skew_factor;
-
-            let temp_fwd = toCenter.clone()
-                .addScaledVector(temp_rgt, skew_x)
-                .addScaledVector(temp_up, -skew_y)
-                .normalize();
-
-            // 6. Finalny Update
-            uniforms.u_pos.value.copy(temp_pos);
-            uniforms.u_forward.value.copy(temp_fwd);
-            uniforms.u_right.value.copy(temp_rgt);
-            uniforms.u_up.value.copy(temp_up);
-        }
-    }
-
-    if (config.fractalAnimationEnabled) {
-        const ap = config.fractalAnimationParams;
-        const wave = (Math.sin(time) + 1.0) * 0.5; 
-
-        uniforms.u_power.value = ap.powerMin + (ap.powerMax - ap.powerMin) * wave;
-        uniforms.u_constant.value.x = ap.xMin + (ap.xMax - ap.xMin) * wave;
-        uniforms.u_constant.value.y = ap.yMin + (ap.yMax - ap.yMin) * wave;
-        uniforms.u_constant.value.z = ap.zMin + (ap.zMax - ap.zMin) * wave;
-        uniforms.u_constant.value.w = ap.wMin + (ap.wMax - ap.wMin) * wave;
-    }
-
-    uniforms.u_time.value = time;
-    customPass.uniforms.u_time.value = time;
-    customPass.uniforms.u_intensity.value = config.effectIntensity;
-
-    composer.render();
-
-    uniforms.u_pos.value = base_pos;
-    uniforms.u_forward.value = base_fwd;
-    uniforms.u_right.value = base_rgt;
-    uniforms.u_up.value = base_up;
-}
-
-animate();
