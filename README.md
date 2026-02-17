@@ -3,7 +3,7 @@
 An interactive 3D fractal explorer built with **Three.js** and custom **GLSL** shaders, utilizing **Ray Marching** technology, head-position control (**Head Tracking**), and anaglyph stereoscopy. This project transforms your monitor into a "holographic window," where the 3D fractal models appear to project out from the screen surface.
 
 ## 🚀 Live Demo
-Project hosted on Render: [https://web-fractal-3d-viewer.onrender.com](https://holographic-fractal-3d-explorer.onrender.com)  
+Project hosted on Render: [See my work!](https://holographic-fractal-3d-explorer.onrender.com)  
 *Note: Please allow camera access to experience the VisionAR head-tracking effect.*
 
 ## ✨ Key Features
