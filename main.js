@@ -3,6 +3,7 @@ import { GUI } from 'lil-gui';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
 
 // --- 1. IMPORTY ZASOBÓW (Vite ?raw) ---
 import vertexShader from './shaders/vertex.glsl?raw';
@@ -76,23 +77,31 @@ const config = {
 };
 
 const uniforms = {
+    // Standard
     u_time: { value: 0 },
     u_resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
 
+    // Camera
     u_pos: { value: new THREE.Vector3(-3.0, 0.0, 0.0) },
     u_fov: { value: 1.0 },
     u_forward: { value: new THREE.Vector3(1.0, 0.0, 0.0) },
     u_up: { value: new THREE.Vector3(0.0, 1.0, 0.0) },
     u_right: { value: new THREE.Vector3(0.0, 0.0, 1.0) },
 
+    // Fractal
     u_power: { value: 5 },
     u_constant: { value: new THREE.Vector4(0.0, 0.0, 0.0, 0.0) },
 
+    // Render
     u_iterations: { value: 10 },
     u_steps: { value: 150 },
     u_accuracy: { value: 1 },
     u_bailout: { value: 5.0 },
     u_threshold: { value: 0.001 },
+
+    // 3D Anaglif
+    u_leye: { x: 0, y: 0, z: 0 },
+    u_reye: { x: 0, y: 0, z: 0 }
 };
 
 const fractalStates = {};
@@ -229,12 +238,15 @@ composer.addPass(new RenderPass(scene, camera));
 
 const customPass = new ShaderPass({
     uniforms: {
+        // Standard
         'u_time': { value: 0 },
         'u_resolution': { value: uniforms.u_resolution.value },
 
+        // Effect
         'tDiffuse': { value: null },
         'u_intensity': { value: config.effectIntensity },
 
+        // Camera
         'u_pos': { value: new THREE.Vector3(0.0, 0.0, 0.0) },
         'u_fov': { value: 0 },
         'u_forward': { value: new THREE.Vector3(0.0, 0.0, 0.0) },
@@ -441,9 +453,127 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 
+//////////////////////////////////////////////
+
+// Globalny obiekt z danymi dla Twoich shaderów
+let faceData = {
+    x: 0.5,       // Środek między oczami (0-1)
+    y: 0.5,
+    distance: 0,  // "Głębia" (rozpiętość oczu)
+    detected: false
+};
+
+let faceLandmarker;
+let video;
+
+async function setupFaceTracking() {
+    const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+    );
+    
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numFaces: 1
+    });
+
+    video = document.createElement('video');
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    video.play();
+}
+
+/*
+async function setupFaceTracking() {
+    // 1️⃣ Załaduj model Mediapipe
+    const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+    );
+    
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numFaces: 1
+    });
+
+    // 2️⃣ Stwórz element video
+    video = document.createElement('video');
+
+    // 3️⃣ Poproś o zgodę na kamerę, aby enumerateDevices działało
+    await navigator.mediaDevices.getUserMedia({ video: true });
+
+    // 4️⃣ Znajdź Iriun Webcam po nazwie
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const iriun = devices.find(d => d.kind === "videoinput" && d.label.includes("Iriun"));
+    if (!iriun) {
+        console.error("Nie znaleziono Iriun Webcam");
+        return;
+    }
+
+    // 5️⃣ Pobierz stream z Iriun
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+            deviceId: { exact: iriun.deviceId },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 }
+        }
+    });
+
+    video.srcObject = stream;
+    video.play();
+}
+*/
+
+function updateFaceTracking() {
+    if (!faceLandmarker || !video || video.readyState < 2) return;
+
+    const results = faceLandmarker.detectForVideo(video, performance.now());
+    
+    if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        const points = results.faceLandmarks[0];
+        
+        // Punkty 33 i 263 to wewnętrzne kąciki oczu
+        const leftEye = points[33];
+        const rightEye = points[263];
+
+        // 1. Środek między oczami (X, Y)
+        faceData.x = (leftEye.x + rightEye.x) / 2;
+        faceData.y = (leftEye.y + rightEye.y) / 2;
+
+        // 2. Odległość (Dystans euklidesowy 3D między oczami)
+        // Im większy wynik, tym twarz jest bliżej kamery
+        faceData.distance = Math.sqrt(
+            Math.pow(rightEye.x - leftEye.x, 2) +
+            Math.pow(rightEye.y - leftEye.y, 2) +
+            Math.pow(rightEye.z - leftEye.z, 2)
+        );
+        
+        faceData.detected = true;
+    } else {
+        faceData.detected = false;
+    }
+}
+
+// Odpalenie kamery
+setupFaceTracking();
+
+
+
+
 // --- 9. PĘTLA ANIMACJI ---
 let time = 0.0;
 let prev_t = performance.now();
+
+let smoothedFace = { x: 0.5, y: 0.5, z: 0.1 };
+const FACE_LERP = 0.5; // Czułość wygładzania (0.01 - 0.2)
+const LOOK_SENSITIVITY = 0.5;
 
 function animate(t) {
     requestAnimationFrame(animate);
@@ -452,23 +582,6 @@ function animate(t) {
     const dt = (t - prev_t) * 0.001;
     prev_t = t;
     time += dt * config.time_speed;
-
-    if (config.fractalAnimationEnabled) {
-        const ap = config.fractalAnimationParams;
-        
-        
-        
-        const wave = (Math.sin(time) + 1.0) * 0.5; 
-
-        
-        uniforms.u_power.value = ap.powerMin + (ap.powerMax - ap.powerMin) * wave;
-
-        
-        uniforms.u_constant.value.x = ap.xMin + (ap.xMax - ap.xMin) * wave;
-        uniforms.u_constant.value.y = ap.yMin + (ap.yMax - ap.yMin) * wave;
-        uniforms.u_constant.value.z = ap.zMin + (ap.zMax - ap.zMin) * wave;
-        uniforms.u_constant.value.w = ap.wMin + (ap.wMax - ap.wMin) * wave;
-    }
 
     if (document.pointerLockElement === renderer.domElement) {
         const moveSpeed = dt * config.movement_speed / 3.0;
@@ -484,11 +597,95 @@ function animate(t) {
         if (keys['shift']) pos.addScaledVector(world_up, -moveSpeed);
     }
 
+    let base_pos = uniforms.u_pos.value.clone();
+    let base_fwd = uniforms.u_forward.value.clone();
+    let base_rgt = uniforms.u_right.value.clone();
+    let base_up = uniforms.u_up.value.clone();
+
+    if(config.visionAREnabled)
+    {
+        updateFaceTracking();    
+        if (faceData.detected) {
+            // 1. Wygładzanie (Dodaj inicjalizację smoothedFace.z = 0.5 jeśli wcześniej jej nie było)
+            smoothedFace.x += (faceData.x - smoothedFace.x) * FACE_LERP;
+            smoothedFace.y += (faceData.y - smoothedFace.y) * FACE_LERP;
+
+
+            if (smoothedFace.z === 0.1) smoothedFace.z = faceData.distance; 
+
+            // 2. Oblicz różnicę (offset) względem momentu startu lub neutralnego punktu
+            // Zamiast sztywnego 0.5, używamy wartości, którą "widzi" kamera gdy siedzisz prosto.
+            const zoom_sensitivity = 5.0; 
+            const deltaZ = faceData.distance - smoothedFace.z; // Różnica w przybliżeniu twarzy
+
+            // Teraz modyfikujemy bazowy dystans o tę różnicę
+            let current_radius = base_pos.length() - (deltaZ * zoom_sensitivity);
+
+            // Clamp dla bezpieczeństwa
+            current_radius = Math.max(0.1, current_radius);
+
+            // 3. Pozycja kamery (Orbitowanie)
+            let temp_pos = new THREE.Vector3(0, 0, current_radius); // Startujemy z osi Z
+            
+            const angleX = (0.5 - smoothedFace.x) * LOOK_SENSITIVITY * 2.0; 
+            const angleY = -(0.5 - smoothedFace.y) * LOOK_SENSITIVITY * 2.0; 
+
+            // Prawidłowa kolejność obrotów dla stabilności: najpierw Y (góra-dół), potem X (lewo-prawo)
+            const euler = new THREE.Euler(angleY, angleX, 0, 'YXZ');
+            temp_pos.applyEuler(euler);
+            
+            // Obracamy też wektor bazowy, żeby zachować orientację względem base_pos
+            const base_quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), base_pos.clone().normalize());
+            temp_pos.applyQuaternion(base_quat);
+
+            // 4. --- PANCERNA REKONSTRUKCJA WEKTORÓW ---
+            let toCenter = temp_pos.clone().negate().normalize();
+            
+            // Używamy "bezpiecznego up" — jeśli patrzymy pionowo w górę, zmieniamy oś pomocniczą
+            let up_guide = Math.abs(toCenter.y) > 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+            
+            let temp_rgt = new THREE.Vector3().crossVectors(toCenter, up_guide).normalize();
+            let temp_up = new THREE.Vector3().crossVectors(temp_rgt, toCenter).normalize();
+
+            // 5. Skrzywienie (Johnny Lee)
+            const skew_factor = 0.6;
+            let skew_x = (0.5 - smoothedFace.x) * skew_factor;
+            let skew_y = (0.5 - smoothedFace.y) * skew_factor;
+
+            let temp_fwd = toCenter.clone()
+                .addScaledVector(temp_rgt, skew_x)
+                .addScaledVector(temp_up, -skew_y)
+                .normalize();
+
+            // 6. Finalny Update
+            uniforms.u_pos.value.copy(temp_pos);
+            uniforms.u_forward.value.copy(temp_fwd);
+            uniforms.u_right.value.copy(temp_rgt);
+            uniforms.u_up.value.copy(temp_up);
+        }
+    }
+
+    if (config.fractalAnimationEnabled) {
+        const ap = config.fractalAnimationParams;
+        const wave = (Math.sin(time) + 1.0) * 0.5; 
+
+        uniforms.u_power.value = ap.powerMin + (ap.powerMax - ap.powerMin) * wave;
+        uniforms.u_constant.value.x = ap.xMin + (ap.xMax - ap.xMin) * wave;
+        uniforms.u_constant.value.y = ap.yMin + (ap.yMax - ap.yMin) * wave;
+        uniforms.u_constant.value.z = ap.zMin + (ap.zMax - ap.zMin) * wave;
+        uniforms.u_constant.value.w = ap.wMin + (ap.wMax - ap.wMin) * wave;
+    }
+
     uniforms.u_time.value = time;
     customPass.uniforms.u_time.value = time;
     customPass.uniforms.u_intensity.value = config.effectIntensity;
 
     composer.render();
+
+    uniforms.u_pos.value = base_pos;
+    uniforms.u_forward.value = base_fwd;
+    uniforms.u_right.value = base_rgt;
+    uniforms.u_up.value = base_up;
 }
 
 animate();
